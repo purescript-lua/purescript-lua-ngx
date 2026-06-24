@@ -42,6 +42,7 @@
             lua51Packages.luacheck
             luaformatter
             nixfmt-rfc-style
+            openresty # nginx + lua-nginx-module, for ./scripts/run
             pslua.packages.${system}.default
             purs-bin.purs-0_15_16
             spago-bin.spago-1_0_4

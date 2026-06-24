@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Demo runner: serves the compiled Lua.Ngx bindings under OpenResty so you can
+# curl them. The bindings wrap the `ngx.*` API the lua-nginx-module injects, so
+# they only run inside an OpenResty worker (plain `lua` or vanilla nginx will
+# not work). Build first with ./scripts/build, then:
+#
+#   nix develop -c ./scripts/run            # serve on :8099
+#   PORT=9000 nix develop -c ./scripts/run  # pick another port
+#
+# In another terminal:
+#   curl http://127.0.0.1:8099/say
+#   curl -i http://127.0.0.1:8099/status
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+dist="$here/dist"
+port="${PORT:-8099}"
+
+if ! command -v openresty >/dev/null 2>&1; then
+  echo "openresty is not on PATH." >&2
+  echo "Run inside the dev shell:  nix develop -c ./scripts/run" >&2
+  echo "(With direnv, reload it after pulling:  direnv reload)" >&2
+  exit 1
+fi
+
+if [ ! -f "$dist/Lua.Ngx.lua" ]; then
+  echo "dist/Lua.Ngx.lua is missing. Run ./scripts/build first." >&2
+  exit 1
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/logs"
+
+# A linked dist module is a flat file named e.g. `Lua.Ngx.lua` (a literal dot in
+# the filename, not a path), so consumers load it with dofile by absolute path
+# rather than require, which would rewrite the dot to a directory separator.
+cat > "$work/nginx.conf" <<EOF
+worker_processes 1;
+daemon off;
+error_log stderr info;
+pid $work/logs/nginx.pid;
+events { worker_connections 64; }
+http {
+  access_log off;
+  lua_code_cache off; # reload the dist on every request while iterating
+  client_body_temp_path $work/logs/client_body;
+  proxy_temp_path        $work/logs/proxy;
+  fastcgi_temp_path      $work/logs/fastcgi;
+  uwsgi_temp_path        $work/logs/uwsgi;
+  scgi_temp_path         $work/logs/scgi;
+  server {
+    listen $port;
+
+    # Lua.Ngx.say is an Effect (String -> Effect Unit), so the generated value
+    # is curried: say(msg) returns a thunk that performs the write when called.
+    location /say {
+      content_by_lua_block {
+        local Ngx = dofile("$dist/Lua.Ngx.lua")
+        Ngx.say("hello from purescript-lua-ngx")()
+      }
+    }
+
+    # Lua.Ngx.Http.Status exposes the HTTP_* constants plus get/set for
+    # ngx.status (set is likewise an effectful thunk).
+    location /status {
+      content_by_lua_block {
+        local Ngx    = dofile("$dist/Lua.Ngx.lua")
+        local Status = dofile("$dist/Lua.Ngx.Http.Status.lua")
+        Status.set(Status.notFound)()
+        Ngx.say("HTTP_OK constant = " .. tostring(Status.ok))()
+        Ngx.say("ngx.status now   = " .. tostring(Status.get()))()
+      }
+    }
+  }
+}
+EOF
+
+echo "Serving compiled Lua.Ngx on http://127.0.0.1:$port"
+echo "  curl http://127.0.0.1:$port/say"
+echo "  curl -i http://127.0.0.1:$port/status"
+echo "Ctrl-C to stop."
+openresty -p "$work" -c "$work/nginx.conf"
