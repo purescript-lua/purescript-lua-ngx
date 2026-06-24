@@ -81,4 +81,6 @@ echo "Serving compiled Lua.Ngx on http://127.0.0.1:$port"
 echo "  curl http://127.0.0.1:$port/say"
 echo "  curl -i http://127.0.0.1:$port/status"
 echo "Ctrl-C to stop."
-openresty -p "$work" -c "$work/nginx.conf"
+# -e stderr sets the error log before the config is parsed, so nginx does not
+# try (and noisily fail) to open its compiled-in default /var/log/nginx path.
+openresty -p "$work" -e stderr -c "$work/nginx.conf"
